@@ -2,8 +2,8 @@ import pytest
 import numpy as np
 
 from src.quantum_gates.circuits import EfficientCircuit
-from src.quantum_gates._simulation.circuit import Circuit, AlternativeCircuit, StandardCircuit
-from src.quantum_gates.backends import EfficientBackend
+from src.quantum_gates._simulation.circuit import Circuit, AlternativeCircuit, StandardCircuit, BinaryCircuit
+from src.quantum_gates.backends import EfficientBackend, BinaryBackend
 from src.quantum_gates._simulation.backend import StandardBackend
 from src.quantum_gates.gates import standard_gates
 import tests.helpers.gates as helper_gates
@@ -19,7 +19,7 @@ convertToProb = np.vectorize(convert_to_prob)
 backend_classes = [StandardBackend, EfficientBackend]
 
 # Circuits
-circuit_classes = [Circuit, StandardCircuit, EfficientCircuit]
+circuit_classes = [Circuit, StandardCircuit, EfficientCircuit, BinaryCircuit]
 
 
 @pytest.mark.parametrize("CircuitClass", circuit_classes)
@@ -30,9 +30,14 @@ def test_circuit_init(CircuitClass):
 @pytest.mark.parametrize("CircuitClass", circuit_classes)
 def test_circuit_apply(CircuitClass):
     circ = CircuitClass(nqubit=2, depth=1, gates=standard_gates)
-    circ.apply(gate=helper_gates.X, i=0)
-    circ.apply(gate=helper_gates.X, i=1)
-    psi1 = circ.statevector(np.array([1, 0, 0, 0]))
+    if isinstance(circ, BinaryCircuit):
+        circ.update_circuit_list(gate=helper_gates.X, qubit = [0])
+        circ.update_circuit_list(gate=helper_gates.X, qubit = [1])
+        psi1 = circ.statevector(np.array([1, 0, 0, 0]), 0, [0,1])
+    else:
+        circ.apply(gate=helper_gates.X, i=0)
+        circ.apply(gate=helper_gates.X, i=1)
+        psi1 = circ.statevector(np.array([1, 0, 0, 0]))
     expected_psi = np.array([0, 0, 0, 1])
     assert all(psi1[i] == expected_psi[i] for i in range(4))
 
@@ -51,14 +56,20 @@ def test_alternative_circuit_apply(BackendClass):
 def test_circuit_apply_None_raises_ValueError(CircuitClass):
     with pytest.raises(ValueError):
         circ = CircuitClass(nqubit=2, depth=1, gates=standard_gates)
-        circ.apply(gate=None, i=0)
+        if isinstance(circ, BinaryCircuit):
+            circ.update_circuit_list(gate=None, qubit = [0])
+        else:
+            circ.apply(gate=None, i=0)
 
 
 @pytest.mark.parametrize("CircuitClass", circuit_classes)
 def test_circuit_apply_2qubit_gate_raises_ValueError(CircuitClass):
     with pytest.raises(ValueError):
         circ = CircuitClass(nqubit=2, depth=1, gates=standard_gates)
-        circ.apply(gate=helper_gates.CNOT, i=0) # Use apply for 2 qubit (CNOT) gate.
+        if isinstance(circ, BinaryCircuit):
+            circ.update_circuit_list(gate=helper_gates.CNOT, qubit = [0])
+        else:
+            circ.apply(gate=helper_gates.CNOT, i=0) # Use apply for 2 qubit (CNOT) gate.
 
 
 @pytest.mark.parametrize("BackendClass", backend_classes)
@@ -95,3 +106,18 @@ def test_alternative_apply_cnot_three_qubits(BackendClass):
     prop_exp = np.array([0, 0, 0, 0, 0, 0, 0, 1**2])
     assert all(abs(abs(prop_found[i]) - abs(prop_exp[i])) < 0.2 for i in range(8)), \
         f"Propagation failed. Expected prop {prop_exp} vs. found {prop_found}."
+    
+def test_non_close_gate_binary_circuit():
+    n_qubit = 3
+    psi0 = [1] + [0] * (2**n_qubit-1)
+    qubit_layout = [0,1,14]
+    circ = BinaryCircuit(nqubit = n_qubit, depth=1, gates= standard_gates)
+    circ.update_circuit_list(gate=helper_gates.X, qubit = [0])
+    circ.update_circuit_list(gate=helper_gates.CNOT, qubit = [0,2])
+    psi1 = circ.statevector(psi0, 0, qubit_layout)
+    exp = np.array([0,0,0,0,0,1,0,0])
+    assert all(psi1[i] == exp[i] for i in range(2**n_qubit))
+
+
+
+    

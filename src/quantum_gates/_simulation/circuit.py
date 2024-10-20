@@ -6,7 +6,7 @@ import numpy as np
 import functools as ft
 
 from .._gates.gates import Gates
-from .backend import StandardBackend, EfficientBackend, BackendForOnes
+from .backend import StandardBackend, EfficientBackend, BackendForOnes, BinaryBackend
 
 
 class Circuit(object):
@@ -591,6 +591,269 @@ class AlternativeCircuit(object):
         self._backend = self._BackendClass(self.nqubit)
         self._mp = [1 for i in range(self.nqubit)]
         self._mp_list = []
+        self.phi = [0 for i in range(self.nqubit)]
+
+
+class BinaryCircuit(object):
+    """ Allows to build a circuit to deal with non linear topologies of the devices.
+
+    In this version, we provide a backend that must be the BinaryBackend because it provide the execution of the circuit with the algorithm that goes beyond
+    the linear topology of a device. It's full general.
+
+    Args:
+        nqubit (int): Number of qubits.
+        depth (int): Depth of the circuit (Doesn't use, but leave here to follow the structure of the previous Circuit Class)
+        gates (int): Gateset from which the noisy quantum gates should be sampled.
+
+    Example:
+        .. code:: python
+
+            from quantum_gates.circuits import BinaryCircuit
+            from quantum_gates.gates import standard_gates
+
+            n_qubit = 3
+
+            circuit = BinaryCircuit(
+                nqubit=n_qubit,
+                depth=1,
+                gates=standard_gates,
+            )
+
+            X, CNOT = ...
+
+            #apply gate on the circuit
+            circ.update_circuit_list(gate=X, qubit = [0])
+            circ.update_circuit_list(gate=CNOT, qubit = [0,2])
+
+            # calculate the statevector
+            psi0 = [1] + [0] * (2**n_qubit-1)
+            qubit_layout = [0,1,2]
+            psi1 = circ.statevector(psi0 = psi0, 0, qubit_layout)
+
+    """
+
+    def __init__(self, nqubit: int, depth: int, gates: Gates): 
+        self.nqubit = nqubit                        # Number of qubits
+        self.gates = gates                          # Gate set to be used (specifies the noisy behaviour)
+        self._backend = BinaryBackend(nqubit)       # Backend for tensor contractions
+
+        # Bookkeeping
+        self.phi = [0 for i in range(nqubit)]       # Phases
+        self._info_gates_list = []                  # List that contain all the info about the gates applied in the circuit and in which qubits
+
+    def update_circuit_list(self, gate : np.ndarray , qubit : list):
+        """Update the list of info_gates of the circuit
+
+        Args:
+            gate (np.array): The matrix representation of the noisy gate
+            i (list): index of the qubit or qubits in which the gate is applied
+        """
+        if not isinstance(gate, np.ndarray):
+            raise ValueError(f"Circuit.update_circuit_list() expected gate to be a numpy array but found type {type(gate)}.")
+        
+        if gate.shape == (4, 4) and len(qubit) != 2:
+            raise ValueError(f"Circuit.update_circuit_list() expected 2 qubit for a two qubit gates but found {len(qubit)} qubits.")
+
+        the_info = [gate, qubit]
+        self._info_gates_list.append(the_info)
+            
+    def statevector(self, psi0 : np.array, level_opt:int, qubit_layout:list) -> np.array:
+        """Compute the output statevector of the noisy quantum circuit, psi1 = U psi0.
+        """
+        # Handle the trivial case in which no gates were applied.
+        if len(self._info_gates_list) == 0:
+            return psi0
+        return self._backend.statevector(self._info_gates_list, psi0, level_opt, qubit_layout)
+
+    def I(self, i: int):
+        """Apply identity gate on qubit i
+
+        Args:
+            i: index of the qubit
+
+        Returns:
+             None
+        """
+        identity_matrix = np.array([[1, 0], [0, 1]])
+        self.update_circuit_list(gate=identity_matrix, qubit=[i])
+
+    def Rz(self, i: int, theta: float):
+        """Update the phase to implement virtual Rz(theta) gate on qubit i
+
+        Args:
+            i: index of the qubit
+            theta: angle of rotation on the Bloch sphere
+
+        Returns:
+             None
+        """
+        self.phi[i] = self.phi[i] + theta
+
+    def bitflip(self, i: int, tm: float, rout: float):
+        """
+        Apply bitflip noise gate on qubit i. Add before measurements or after initial state preparation.
+
+        Args:
+            i: index of the qubit
+            tm: measurement time in ns
+            rout: readout error
+
+        Returns:
+             None
+        """
+        self.update_circuit_list(gate=self.gates.bitflip(tm, rout), qubit=[i])
+
+    def relaxation(self, i: int, Dt: float, T1: float, T2: float):
+        """Apply relaxation noise gate on qubit i. Add on idle-qubits.
+
+        Args:
+            i: index of the qubit
+            Dt: idle time in ns
+            T1: qubit's amplitude damping time in ns
+            T2: qubit's dephasing time in ns
+
+        Returns:
+             None
+        """
+        self.update_circuit_list(gate=self.gates.relaxation(Dt, T1, T2), qubit=[i])
+
+    def depolarizing(self, i: int, Dt: float, p: float):
+        """Apply depolarizing noise gate on qubit i. Add on idle-qubits.
+
+        Args:
+            i: index of the qubit
+            Dt: idle time in ns
+            p: single-qubit depolarizing error probability
+
+        Returns:
+             None
+        """
+        self.update_circuit_list(gate=self.gates.depolarizing(Dt, p), qubit=[i])
+
+    def X(self, i: int, p: float, T1: float, T2: float) -> np.array:
+        """
+        Apply X single-qubit noisy quantum gate with depolarizing and
+        relaxation errors during the unitary evolution.
+
+        Args:
+            i: index of the qubit
+            p: single-qubit depolarizing error probability
+            T1: qubit's amplitude damping time in ns
+            T2: qubit's dephasing time in ns
+
+        Returns:
+              None
+        """
+        self.update_circuit_list(gate=self.gates.X(-self.phi[i], p, T1, T2), qubit=[i])
+
+    def SX(self, i: int, p: float, T1: float, T2: float):
+        """
+        Apply SX single-qubit noisy quantum gate with depolarizing and
+        relaxation errors during the unitary evolution.
+
+        Args:
+            i: index of the qubit
+            p: single-qubit depolarizing error probability
+            T1: qubit's amplitude damping time in ns
+            T2: qubit's dephasing time in ns
+
+        Returns:
+              None
+        """
+        self.update_circuit_list(gate=self.gates.SX(-self.phi[i], p, T1, T2), qubit=[i])
+
+    def CNOT(self, i: int, k: int, t_int: float, p_i_k: float, p_i: float, p_k: float, T1_ctr: float,
+             T2_ctr: float, T1_trg: float, T2_trg: float):
+        """
+        Apply CNOT two-qubit noisy quantum gate with depolarizing and
+        relaxation errors on both qubits during the unitary evolution.
+
+        Args:
+            i: index of the control qubit (int)
+            k: index of the target qubit (int)
+            t_int: CNOT gate time in ns (double)
+            p_i_k: CNOT depolarizing error probability (double)
+            p_i: control single-qubit depolarizing error probability (double)
+            p_k: target single-qubit depolarizing error probability (double)
+            T1_ctr: control qubit's amplitude damping time in ns (double)
+            T2_ctr: control qubit's dephasing time in ns (double)
+            T1_trg: target qubit's amplitude damping time in ns (double)
+            T2_trg: target qubit's dephasing time in ns (double)
+
+        Returns:
+              None
+        """
+
+        # Add two qubit gate to circuit snippet
+        if i < k:
+            # Control i
+            the_gate = self.gates.CNOT(
+                self.phi[i], self.phi[k], t_int, p_i_k, p_i, p_k, T1_ctr, T2_ctr, T1_trg, T2_trg
+            )
+            self.phi[i] = self.phi[i] - np.pi/2
+
+            self.update_circuit_list(gate=the_gate, qubit=[i,k])
+        else:
+            # Control i
+            the_gate = self.gates.CNOT_inv(
+                self.phi[i], self.phi[k], t_int, p_i_k, p_i, p_k, T1_ctr, T2_ctr, T1_trg, T2_trg
+            )
+
+            self.phi[i] = self.phi[i] + np.pi/2 + np.pi
+
+            # Target k
+            self.phi[k] = self.phi[k] + np.pi/2
+
+            self.update_circuit_list(gate=the_gate, qubit=[i,k])
+
+        return
+
+    def ECR(self, i: int, k: int, t_ecr: float, p_i_k: float, p_i: float, p_k: float, T1_ctr: float,
+             T2_ctr: float, T1_trg: float, T2_trg: float):
+        """
+        Apply ECR two-qubit noisy quantum gate with depolarizing and
+        relaxation errors on both qubits during the unitary evolution.
+
+        Args:
+            i: index of the control qubit (int)
+            k: index of the target qubit (int)
+            t_ecr: ECR gate time in ns (double)
+            p_i_k: ECR depolarizing error probability (double)
+            p_i: control single-qubit depolarizing error probability (double)
+            p_k: target single-qubit depolarizing error probability (double)
+            T1_ctr: control qubit's amplitude damping time in ns (double)
+            T2_ctr: control qubit's dephasing time in ns (double)
+            T1_trg: target qubit's amplitude damping time in ns (double)
+            T2_trg: target qubit's dephasing time in ns (double)
+
+        Returns:
+              None
+        """
+        
+        # Add two qubit gate to circuit snippet
+        if i < k:
+            # Control i
+            the_gate = self.gates.ECR(
+                self.phi[i], self.phi[k], t_ecr, p_i_k, p_i, p_k, T1_ctr, T2_ctr, T1_trg, T2_trg
+            )
+
+            self.update_circuit_list(gate=the_gate, qubit=[i,k])
+
+        else:
+            # Control i
+            the_gate = self.gates.ECR_inv(
+                self.phi[k], self.phi[i], t_ecr, p_i_k, p_i, p_k, T1_ctr, T2_ctr, T1_trg, T2_trg
+            )
+
+            self.update_circuit_list(gate=the_gate, qubit=[k,i])
+
+        return
+
+    def reset(self):
+        """ Reset the circuit to the initial state. """
+        self.phi = [0 for i in range(self.nqubit)]
+        self._backend = self._BackendClass(self.nqubit)
+        self._info_gates_list = [] 
         self.phi = [0 for i in range(self.nqubit)]
 
 
